@@ -71,7 +71,7 @@ NoMQ follows a **layered architecture** to separate concerns and ensure modulari
 - **MicroPython Runtime**: Provides the execution environment for resource-constrained devices.
 - **Wi-Fi Module**: Manages network connectivity with automatic reconnection logic.
 
-![test wireshark](./docs/imgs/wirehark.png) 
+![test wireshark](./docs/imgs/wireshark.png) 
 
 
 
@@ -284,7 +284,7 @@ NoMQ is licensed under the [MIT License](LICENSE). See the LICENSE file for deta
 
 ## 📬 Contact
 
-For questions, suggestions, or support, please open an issue on the [GitHub repository](https://github.com/armanghobadi/nomq) or contact the maintainers at [your-email@example.com](mailto:arman.ghobadi.ag@gmail.com).
+For questions, suggestions, or support, please open an issue on the [GitHub repository](https://github.com/armanghobadi/nomq) or contact the maintainers at [arman.ghobadi.ag@gmail.com](mailto:arman.ghobadi.ag@gmail.com).
 
 ---
 
