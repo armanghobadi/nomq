@@ -11,14 +11,12 @@
 
 - [Introduction](#introduction)
 - [System Objectives](#system-objectives)
-- [Architecture](#architecture)
 - [Protocol Structure](#protocol-structure)
 - [Features](#features)
 - [Installation](#installation)
 - [Usage](#usage)
 - [Deployment in Real-World Scenarios](#deployment-in-real-world-scenarios)
 - [UML Diagram](#uml-diagram)
-- [Contributing](#contributing)
 - [License](#license)
 
 ---
@@ -73,24 +71,10 @@ NoMQ follows a **layered architecture** to separate concerns and ensure modulari
 - **MicroPython Runtime**: Provides the execution environment for resource-constrained devices.
 - **Wi-Fi Module**: Manages network connectivity with automatic reconnection logic.
 
-![test wireshark](./docs/imgs/wireshark.png) 
+![test wireshark](./docs/imgs/wirehark.png) 
 
 
 
-### Architecture Diagram
-```mermaid
-graph TD
-    A[Application] -->|Publish/Subscribe| B[NoMQ Protocol]
-    B -->|Control Layer| C[Packet Metadata]
-    B -->|Security Layer| D[AES-256-CBC + HMAC-SHA256]
-    B -->|Data Layer| E[JSON Payload]
-    B -->|Verification Layer| F[HMAC Validation]
-    B -->|UDP Socket| G[Network]
-    G --> H[Wi-Fi Module]
-    H --> I[IoT Device (ESP32/ESP8266)]
-```
-
----
 
 ## 📡 Protocol Structure
 
@@ -292,20 +276,6 @@ classDiagram
 
 ---
 
-## 🤝 Contributing
-
-Contributions are welcome! To contribute to NoMQ:
-
-1. Fork the repository.
-2. Create a new branch (`git checkout -b feature/your-feature`).
-3. Commit your changes (`git commit -m 'Add your feature'`).
-4. Push to the branch (`git push origin feature/your-feature`).
-5. Open a Pull Request.
-
-Please ensure your code adheres to the [PEP 8](https://www.python.org/dev/peps/pep-0008/) style guide and includes appropriate tests.
-
----
-
 ## 📄 License
 
 NoMQ is licensed under the [MIT License](LICENSE). See the LICENSE file for details.
@@ -314,7 +284,7 @@ NoMQ is licensed under the [MIT License](LICENSE). See the LICENSE file for deta
 
 ## 📬 Contact
 
-For questions, suggestions, or support, please open an issue on the [GitHub repository](https://github.com/your-repo/nomq) or contact the maintainers at [your-email@example.com](mailto:your-email@example.com).
+For questions, suggestions, or support, please open an issue on the [GitHub repository](https://github.com/armanghobadi/nomq) or contact the maintainers at [your-email@example.com](mailto:arman.ghobadi.ag@gmail.com).
 
 ---
 
