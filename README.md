@@ -164,19 +164,6 @@ NoMQ uses a well-defined packet structure to ensure efficiency and security. Eac
      ampy --port /dev/ttyUSB0 put nomq.py
      ```
 
-4. **Configure Network**:
-   - Update the Wi-Fi credentials in `nomq.py`:
-     ```python
-     SSID = "Your-WiFi-SSID"
-     PASSWORD = "Your-WiFi-Password"
-     ```
-
-5. **Run the Application**:
-   - Execute the code via a serial terminal (e.g., `screen` or `Thonny`):
-     ```python
-     import nomq
-     ```
-
 ---
 
 ## 🚀 Usage

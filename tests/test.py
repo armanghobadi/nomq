@@ -8,8 +8,8 @@ import ubinascii
 import os
 
 # Wi-Fi configuration
-WIFI_SSID = "Dade-Pardazan-2GHz"
-WIFI_PASSWORD = "@14002020"
+WIFI_SSID = "SSID"
+WIFI_PASSWORD = "PASS"
 
 def connect_wifi():
     """Connect to Wi-Fi network and return IP address."""
