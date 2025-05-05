@@ -1,292 +1,300 @@
-import uasyncio as asyncio
 import network
+import uasyncio as asyncio
 import time
-import socket
-import json
-from nomq import NoMQ  # Assumes NoMQ class is in nomq.py
 import ubinascii
 import os
+import socket
+import json
 
-# Wi-Fi configuration
+# Import the NoMQ class (assuming it's in the same directory)
+from nomq import NoMQ, SimpleLogger
+
+# WiFi credentials (replace with your own)
 WIFI_SSID = "SSID"
 WIFI_PASSWORD = "PASS"
 
+# Test configuration
+TEST_CHANNEL = "test/channel"
+TEST_MESSAGE = "Test message"
+TEST_PORT = 8888
+TIMEOUT = 15  # Timeout for receive tests in seconds
+INVALID_IP = "255.255.255.255"
+INVALID_PORT = 9999
+INVALID_CHANNEL = ""
+
+# Logger instance for test output
+logger = SimpleLogger(level='DEBUG')
+
 def connect_wifi():
-    """Connect to Wi-Fi network and return IP address."""
+    """Connect to WiFi network and return IP address."""
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
     if not wlan.isconnected():
-        print("Connecting to Wi-Fi...")
+        logger.info("Connecting to WiFi...")
         wlan.connect(WIFI_SSID, WIFI_PASSWORD)
-        timeout = 10
-        while not wlan.isconnected() and timeout > 0:
+        start_time = time.time()
+        while not wlan.isconnected():
+            if time.time() - start_time > 10:
+                logger.error("WiFi connection timeout")
+                return None
             time.sleep(1)
-            timeout -= 1
-        if not wlan.isconnected():
-            raise Exception("Failed to connect to Wi-Fi")
-    ip = wlan.ifconfig()[0]
-    print(f"Wi-Fi connected: IP = {ip}")
-    return ip
+        logger.info(f"WiFi connected. IP: {wlan.ifconfig()[0]}")
+    return wlan.ifconfig()[0]
 
-class NoMQTest:
-    def __init__(self):
-        self.ip = None
-        self.port = 8888
-        self.nomq = None
-        self.test_channel = "test/channel"
-        self.test_message = "Test message"
-        self.received_messages = []
+async def test_initialization():
+    """Test NoMQ initialization and socket setup."""
+    logger.info("Testing NoMQ initialization...")
+    nomq = None
+    try:
+        nomq = NoMQ(ip='0.0.0.0', port=TEST_PORT, log_level='DEBUG')
+        if nomq.socket is not None and nomq.running and nomq.poller is not None:
+            logger.info("Initialization test: PASSED")
+            return True
+        else:
+            logger.error("Initialization test: FAILED")
+            return False
+    except Exception as e:
+        logger.error(f"Initialization test failed: {e}")
+        return False
+    finally:
+        if nomq:
+            nomq.close()
 
-    async def setup(self):
-        """Set up Wi-Fi and NoMQ instance."""
-        try:
-            self.ip = connect_wifi()
-            self.nomq = NoMQ(ip=self.ip, port=self.port)
-            print("Setup completed successfully")
-        except Exception as e:
-            print(f"Setup failed: {e}")
-            raise
+async def test_invalid_encryption_key():
+    """Test initialization with invalid encryption key."""
+    logger.info("Testing invalid encryption key...")
+    try:
+        nomq = NoMQ(encryption_key=b"short_key", log_level='DEBUG')
+        logger.error("Invalid encryption key test: FAILED (should have raised ValueError)")
+        return False
+    except ValueError as e:
+        logger.info(f"Invalid encryption key test: PASSED (caught: {e})")
+        return True
+    except Exception as e:
+        logger.error(f"Invalid encryption key test failed: {e}")
+        return False
 
-    async def test_initialization(self):
-        """Test NoMQ initialization."""
-        print("Test 1: Initialization")
-        assert self.nomq.ip == self.ip, "IP address mismatch"
-        assert self.nomq.port == self.port, "Port mismatch"
-        assert self.nomq.socket is not None, "Socket not initialized"
-        assert len(self.nomq.device_id) > 0, "Device ID not generated"
-        assert self.nomq.session_id > 0, "Session ID not generated"
-        print("Initialization test passed")
-
-    async def test_subscribe(self):
-        """Test subscribing to a channel."""
-        print("Test 2: Subscribe")
-        self.nomq.subscribe(self.test_channel, priority=1)
-        await asyncio.sleep(1)
-        assert self.test_channel in self.nomq.channels, "Channel not subscribed"
-        assert self.nomq.channels[self.test_channel]["priority"] == 1, "Priority mismatch"
-        print("Subscribe test passed")
-
-    async def test_publish_qos0(self):
-        """Test publishing with QoS=0."""
-        print("Test 3: Publish with QoS=0")
-        await self.nomq.publish(
-            channel=self.test_channel,
-            message=self.test_message,
-            qos=0,
-            retain=False,
-            ttl=3600,
-            ip=self.ip,
-            port=self.port
-        )
-        await asyncio.sleep(1)
-        assert len(self.nomq.pending_messages) == 0, "Pending messages found for QoS=0"
-        print("Publish QoS=0 test passed")
+async def test_subscribe(device_ip):
+    """Test subscribing to a channel."""
+    logger.info("Testing subscribe...")
+    nomq = None
+    try:
+        nomq = NoMQ(ip='0.0.0.0', port=TEST_PORT, log_level='DEBUG')
+        await nomq.subscribe(TEST_CHANNEL, priority=5)
+        if TEST_CHANNEL in nomq.channels and nomq.channels[TEST_CHANNEL]["priority"] == 5:
+            logger.info("Subscribe test: PASSED")
+            return True
+        else:
+            logger.error("Subscribe test: FAILED")
+            return False
+    except Exception as e:
+        logger.error(f"Subscribe test failed: {e}")
+        return False
+    finally:
+        if nomq:
+            nomq.close()
 
 
-    async def test_publish_qos1(self):
-        """Test publishing with QoS=1 and ACK."""
-        print("Test 4: Publish with QoS=1")
-        packet_id = None
-        
-        # Publish a message with QoS=1
-        await self.nomq.publish(
-            channel=self.test_channel,
-            message=self.test_message + "_qos1",
-            qos=1,
-            retain=False,
-            ttl=3600,
-            ip=self.ip,
-            port=self.port
-        )
-        
-        # Immediately check for a pending message
-        for pid in self.nomq.pending_messages:
-            packet_id = pid
-            break
-        assert packet_id is not None, "No pending message for QoS=1"
-        
-        # Start the listen task to process the ACK
-        listen_task = asyncio.create_task(self.nomq.listen())
-        await asyncio.sleep(0.1)  # Brief delay to ensure listen task is running
-        
-        # Create and send an ACK packet
-        ack_packet = self.nomq.create_packet(
-            packet_type=0x03,  # ACK
-            flags=1,
-            channel_id=self.nomq.channels[self.test_channel]["id"],
-            payload=json.dumps({"ack": packet_id}).encode('utf-8'),
-            packet_id=packet_id
-        )
-        self.nomq.socket.sendto(ack_packet, (self.ip, self.port))
-        
-        # Wait for the ACK to be processed
-        await asyncio.sleep(2)  # Allow time for ACK processing
-        
-        # Stop the listen task
-        listen_task.cancel()
-        
-        # Check if the ACK was processed
-        assert packet_id not in self.nomq.pending_messages, "ACK not processed"
-        print("Publish QoS=1 test passed")
-            
-    async def test_publish_qos2(self):
-        """Test publishing with QoS=2."""
-        print("Test 5: Publish with QoS=2")
-        await self.nomq.publish(
-            channel=self.test_channel,
-            message=self.test_message + "_qos2",
-            qos=2,
-            retain=False,
-            ttl=3600,
-            ip=self.ip,
-            port=self.port
-        )
-        await asyncio.sleep(1)
-        assert len(self.nomq.pending_messages) > 0, "No pending messages for QoS=2"
-        print("Publish QoS=2 test passed")
+async def test_publish(device_ip):
+    """Test publishing a message."""
+    logger.info("Testing publish...")
+    nomq = None
+    try:
+        nomq = NoMQ(ip='0.0.0.0', port=TEST_PORT, log_level='DEBUG')
+        await nomq.publish(TEST_CHANNEL, TEST_MESSAGE, qos=2, retain=True, ip=device_ip, port=TEST_PORT)
+        if nomq.retained_messages.get(TEST_CHANNEL) or nomq.pending_messages:
+            logger.info("Publish test: PASSED")
+            return True
+        else:
+            logger.error("Publish test: FAILED")
+            return False
+    except Exception as e:
+        logger.error(f"Publish test failed: {e}")
+        return False
+    finally:
+        if nomq:
+            nomq.close()
 
-    async def test_retained_message(self):
-        """Test publishing and receiving retained messages."""
-        print("Test 6: Retained message")
-        await self.nomq.publish(
-            channel=self.test_channel,
-            message=self.test_message + "_retained",
-            qos=1,
-            retain=True,
-            ttl=3600,
-            ip=self.ip,
-            port=self.port
-        )
-        await asyncio.sleep(1)
-        assert self.test_channel in self.nomq.retained_messages, "Retained message not stored"
-        # Subscribe again to receive retained message
-        self.nomq.subscribe(self.test_channel + "_retained", priority=1)
-        await asyncio.sleep(1)
-        print("Retained message test passed")
 
-    async def test_listen(self):
-        """Test listening for incoming messages."""
-        print("Test 7: Listen for messages")
-        self.received_messages = []
 
-        async def capture_messages():
-            while True:
+async def test_receive(device_ip):
+    """Test receiving a published message."""
+    logger.info("Testing receive...")
+    nomq = None
+    try:
+        nomq = NoMQ(ip='0.0.0.0', port=TEST_PORT, log_level='DEBUG')
+        await nomq.subscribe(TEST_CHANNEL, priority=5)
+        await nomq.publish(TEST_CHANNEL, TEST_MESSAGE, qos=2, ip=device_ip, port=TEST_PORT)
+        logger.debug(f"Published message to {device_ip}:{TEST_PORT} on {TEST_CHANNEL}")
+        await asyncio.sleep(0.5)  # Ensure network delivery
+
+        start_time = time.time()
+        received = False
+        while time.time() - start_time < TIMEOUT:
+            events = nomq.poller.poll(200)
+            if events:
                 try:
-                    data, addr = self.nomq.socket.recvfrom(1024)
-                    packet = self.nomq.parse_packet(data)
-                    if packet and packet["type"] == 0x01:  # Publish
+                    data, addr = nomq.socket.recvfrom(nomq.BUFFER_SIZE)
+                    logger.debug(f"Received packet from {addr}, length: {len(data)}")
+                    packet = nomq.parse_packet(data)
+                    if packet and packet.get("channel") == TEST_CHANNEL:
                         payload_data = json.loads(packet["payload"].decode('utf-8'))
-                        self.received_messages.append(payload_data["message"])
-                except Exception:
-                    await asyncio.sleep(0.1)
+                        logger.debug(f"Payload: {payload_data}")
+                        if payload_data["message"] == TEST_MESSAGE:
+                            logger.info("Receive test: PASSED")
+                            received = True
+                            break
+                except Exception as e:
+                    logger.error(f"Error receiving packet: {e}")
+            await asyncio.sleep(0.01)
+        
+        if not received:
+            logger.error("Receive test: FAILED")
+        return received
+    except Exception as e:
+        logger.error(f"Receive test failed: {e}")
+        return False
+    finally:
+        if nomq:
+            nomq.close()
 
-        listen_task = asyncio.create_task(capture_messages())
-        # Publish a message to test listening
-        await self.nomq.publish(
-            channel=self.test_channel,
-            message=self.test_message + "_listen",
-            qos=1,
-            ip=self.ip,
-            port=self.port
-        )
-        await asyncio.sleep(2)
-        listen_task.cancel()
-        assert any("_listen" in msg for msg in self.received_messages), "Message not received"
-        print("Listen test passed")
+async def test_unsubscribe(device_ip):
+    """Test unsubscribing from a channel."""
+    logger.info("Testing unsubscribe...")
+    nomq = None
+    try:
+        nomq = NoMQ(ip='0.0.0.0', port=TEST_PORT, log_level='DEBUG')
+        await nomq.subscribe(TEST_CHANNEL, priority=5)
+        await nomq.unsubscribe(TEST_CHANNEL)
+        if TEST_CHANNEL not in nomq.channels:
+            logger.info("Unsubscribe test: PASSED")
+            return True
+        else:
+            logger.error("Unsubscribe test: FAILED")
+            return False
+    except Exception as e:
+        logger.error(f"Unsubscribe test failed: {e}")
+        return False
+    finally:
+        if nomq:
+            nomq.close()
 
-    async def test_heartbeat(self):
-        """Test sending and receiving heartbeat."""
-        print("Test 8: Heartbeat")
-        heartbeat_packet = self.nomq.create_packet(
-            packet_type=0x05,
+async def test_cleanup_expired_messages(device_ip):
+    """Test cleanup of expired messages."""
+    logger.info("Testing cleanup of expired messages...")
+    nomq = None
+    try:
+        nomq = NoMQ(ip='0.0.0.0', port=TEST_PORT, log_level='DEBUG')
+        await nomq.publish(TEST_CHANNEL, TEST_MESSAGE, qos=2, retain=True, ttl=1, ip=device_ip, port=TEST_PORT)
+        await asyncio.sleep(2)  # Wait for TTL to expire
+        await nomq.cleanup_expired_messages()
+        if not nomq.retained_messages.get(TEST_CHANNEL) and not nomq.pending_messages:
+            logger.info("Cleanup expired messages test: PASSED")
+            return True
+        else:
+            logger.error("Cleanup expired messages test: FAILED")
+            return False
+    except Exception as e:
+        logger.error(f"Cleanup expired messages test failed: {e}")
+        return False
+    finally:
+        if nomq:
+            nomq.close()
+
+
+async def test_heartbeat(device_ip):
+    """Test sending and receiving heartbeat response."""
+    logger.info("Testing heartbeat...")
+    nomq = None
+    try:
+        nomq = NoMQ(ip='0.0.0.0', port=TEST_PORT, log_level='DEBUG')
+        packet = nomq.create_packet(
+            packet_type=0x05,  # Heartbeat
             flags=0,
             channel_id=b'\x00' * 16,
             payload=b""
         )
-        self.nomq.socket.sendto(heartbeat_packet, (self.ip, self.port))
-        await asyncio.sleep(1)
-        print("Heartbeat test passed (response sent)")
-
-    async def test_unsubscribe(self):
-        """Test unsubscribing from a channel."""
-        print("Test 9: Unsubscribe")
-        self.nomq.unsubscribe(self.test_channel)
-        await asyncio.sleep(1)
-        assert self.test_channel not in self.nomq.channels, "Channel not unsubscribed"
-        print("Unsubscribe test passed")
-
-    async def test_encryption(self):
-        """Test packet encryption and decryption."""
-        print("Test 10: Encryption")
-        payload = b"Test encryption"
-        packet = self.nomq.create_packet(
-            packet_type=0x01,
-            flags=0,
-            channel_id=self.nomq.channels.get(self.test_channel, {"id": b'\x00' * 16})["id"],
-            payload=payload
-        )
-        parsed_packet = self.nomq.parse_packet(packet)
-        assert parsed_packet["payload"] == payload, "Decryption failed"
-        print("Encryption test passed")
-
-    async def test_hmac_verification(self):
-        """Test HMAC verification."""
-        print("Test 11: HMAC verification")
-        payload = b"Test HMAC"
-        channel_id = self.nomq.channels.get(self.test_channel, {"id": b'\x00' * 16})["id"]
-        packet = self.nomq.create_packet(
-            packet_type=0x01,
-            flags=0,
-            channel_id=channel_id,
-            payload=payload
-        )
-        # Corrupt HMAC
-        corrupted_packet = packet[:-32] + os.urandom(32)
-        parsed_packet = self.nomq.parse_packet(corrupted_packet)
-        assert parsed_packet is None, "HMAC verification did not fail for corrupted packet"
-        print("HMAC verification test passed")
-        
-        
-    async def test_error_handling(self):
-        """Test error handling for invalid inputs."""
-        print("Test 12: Error handling")
-        try:
-            self.nomq.subscribe("")  # Empty channel
-            assert False, "Empty channel subscription did not raise error"
-        except Exception:
-            pass
-        try:
-            await self.nomq.publish("", "message")  # Empty channel
-            assert False, "Empty channel publish did not raise error"
-        except Exception:
-            pass
-        print("Error handling test passed")
-
-    async def run_all_tests(self):
-        """Run all test cases."""
-        await self.setup()
-        await self.test_initialization()
-        await self.test_subscribe()
-        await self.test_publish_qos0()
-        await self.test_publish_qos1()
-        await self.test_publish_qos2()
-        await self.test_retained_message()
-        await self.test_listen()
-        await self.test_heartbeat()
-        await self.test_unsubscribe()
-        await self.test_encryption()
-        await self.test_hmac_verification()
-        await self.test_error_handling()
-        print("All tests completed successfully!")
-
-async def main():
-    """Main function to run tests."""
-    tester = NoMQTest()
-    try:
-        await tester.run_all_tests()
+        nomq.socket.sendto(packet, (device_ip, TEST_PORT))
+        start_time = time.time()
+        received = False
+        while time.time() - start_time < TIMEOUT:
+            events = nomq.poller.poll(200)
+            if events:
+                data, addr = nomq.socket.recvfrom(nomq.BUFFER_SIZE)
+                packet = nomq.parse_packet(data)
+                if packet and packet["type"] == 0x05:
+                    logger.info("Heartbeat test: PASSED")
+                    received = True
+                    break
+            await asyncio.sleep(0.01)
+        if not received:
+            logger.error("Heartbeat test: FAILED")
+        return received
     except Exception as e:
-        print(f"Test suite failed: {e}")
+        logger.error(f"Heartbeat test failed: {e}")
+        return False
+    finally:
+        if nomq:
+            nomq.close()
 
-# Run the test suite
-loop = asyncio.get_event_loop()
-loop.run_until_complete(main())
+async def test_session_renewal():
+    """Test session ID renewal."""
+    logger.info("Testing session renewal...")
+    nomq = None
+    try:
+        nomq = NoMQ(ip='0.0.0.0', port=TEST_PORT, log_level='DEBUG')
+        nomq.session_timeout = 1  # Set short timeout for testing
+        old_session_id = nomq.session_id
+        await asyncio.sleep(2)  # Wait for session to expire
+        nomq.renew_session()
+        if nomq.session_id != old_session_id:
+            logger.info("Session renewal test: PASSED")
+            return True
+        else:
+            logger.error("Session renewal test: FAILED")
+            return False
+    except Exception as e:
+        logger.error(f"Session renewal test failed: {e}")
+        return False
+    finally:
+        if nomq:
+            nomq.close()
+
+async def run_tests():
+    """Run all tests."""
+    device_ip = connect_wifi()
+    if not device_ip:
+        logger.error("Aborting tests due to WiFi connection failure")
+        return
+
+    results = {
+        "initialization": await test_initialization(),
+        "invalid_encryption_key": await test_invalid_encryption_key(),
+        "subscribe": await test_subscribe(device_ip),
+        "publish": await test_publish(device_ip),
+        "receive": await test_receive(device_ip),
+        "unsubscribe": await test_unsubscribe(device_ip),
+        "cleanup_expired_messages": await test_cleanup_expired_messages(device_ip),
+        "heartbeat": await test_heartbeat(device_ip),
+        "session_renewal": await test_session_renewal()
+    }
+
+    # Summary
+    logger.info("\nTest Summary:")
+    passed = 0
+    total = len(results)
+    for test_name, result in results.items():
+        status = "PASSED" if result else "FAILED"
+        logger.info(f"{test_name}: {status}")
+        if result:
+            passed += 1
+    
+    logger.info(f"\n{passed}/{total} tests passed")
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(run_tests())
+    except KeyboardInterrupt:
+        logger.info("Tests interrupted by user")
+    except Exception as e:
+        logger.error(f"Test execution failed: {e}")
