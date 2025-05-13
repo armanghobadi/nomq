@@ -10,7 +10,7 @@ from ucryptolib import aes
 import ubinascii
 import os
 import select
-from loger import SimpleLogger
+from logger import SimpleLogger
 
 class NoMQ:
     """
