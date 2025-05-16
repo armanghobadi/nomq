@@ -13,7 +13,28 @@ import select
 import json
 import gc
 
-from logger import SimpleLogger
+class SimpleLogger:
+    """A simple logger for MicroPython with minimal memory footprint."""
+    LEVELS = {'DEBUG': 10, 'INFO': 20, 'WARNING': 30, 'ERROR': 40}
+    
+    def __init__(self, level='DEBUG'):
+        self.level = self.LEVELS.get(level, 20)
+    
+    def _log(self, level, msg):
+        if self.LEVELS.get(level, 20) >= self.level:
+            print(f"[{level}] {time.time()}: {msg}")
+    
+    def debug(self, msg):
+        self._log('DEBUG', msg)
+    
+    def info(self, msg):
+        self._log('INFO', msg)
+    
+    def warning(self, msg):
+        self._log('WARNING', msg)
+    
+    def error(self, msg):
+        self._log('ERROR', msg)
 
 class NoMQ:
     """
@@ -29,7 +50,7 @@ class NoMQ:
     MAX_CHANNELS = 20
     MAX_PAYLOAD_SIZE = 256
     DEFAULT_TTL = 3600
-    BUFFER_SIZE = 512
+    BUFFER_SIZE = 256
     HEARTBEAT_INTERVAL = 30
     SESSION_TIMEOUT = 300
     MAX_RETRIES = 3
@@ -314,61 +335,90 @@ class NoMQ:
             del self.pending_messages[oldest_key]
         gc.collect()
 
+    def cleanup_nonces(self):
+        now = time.time()
+        self.used_nonces = [n for n in self.used_nonces if now - n['timestamp'] < 60]
+
+        # سقف تعداد: 1000 مورد آخر
+        if len(self.used_nonces) > 1000:
+            self.used_nonces = self.used_nonces[-1000:]
+
+    
     async def listen(self):
         self.running = True
         while self.running:
             try:
                 events = self.poller.poll(50)
-                if events:
-                    data, addr = self.socket.recvfrom(self.BUFFER_SIZE)
-                    if addr not in self.authenticated_devices:
-                        self.logger.warning(f"Unauthenticated device: {addr}")
+                if not events:
+                    await asyncio.sleep(0.1)
+                    continue
+
+                data, addr = self.socket.recvfrom(self.BUFFER_SIZE)
+
+                if addr not in self.authenticated_devices:
+                    self.logger.warning(f"Unauthenticated device: {addr}")
+                    continue
+
+                packet = self.parse_packet(data)
+                if not packet or not isinstance(packet, dict):
+                    self.logger.error(f"Packet parsing failed from {addr}. Raw data: {data}")
+                    continue
+
+                channel = packet.get("channel")
+                if not channel:
+                    self.logger.warning(f"Missing channel in packet from {addr}")
+                    continue
+
+                if channel not in [ch['name'] for ch in self.channels]:
+                    self.logger.warning(f"Unsubscribed channel: {channel}")
+                    continue
+
+                if packet.get("type") == 0x01:
+                    payload = packet.get("payload")
+                    if not payload or len(payload) < 20:
+                        self.logger.error(f"Invalid payload from {addr}")
                         continue
 
-                    packet = self.parse_packet(data)
-                    if not packet:
-                        continue
+                    try:
+                        timestamp, nonce, msg_len = struct.unpack('!QII', payload[:20])
+                        message = payload[20:20 + msg_len].decode('utf-8')
 
-                    channel = packet.get("channel")
-                    if channel not in [ch['name'] for ch in self.channels]:
-                        self.logger.warning(f"Unsubscribed channel: {channel}")
-                        continue
+                        if any(n['nonce'] == nonce for n in self.used_nonces):
+                            self.logger.warning("Replay attack detected")
+                            continue
 
-                    if packet["type"] == 0x01:
-                        try:
-                            payload = packet["payload"]
-                            timestamp, nonce, msg_len = struct.unpack('!QII', payload[:20])
-                            message = payload[16:16+msg_len].decode('utf-8')
-                            if any(n['nonce'] == nonce for n in self.used_nonces):
-                                self.logger.warning("Replay attack detected")
-                                continue
-                            self.used_nonces.append({'nonce': nonce, 'timestamp': time.time()})
-                            self.cleanup_nonces()
-                            self.logger.info(f"Received on {channel}: {message}")
-                            qos = packet["flags"] & 0x03
-                            if qos in (1, 2, 3):
-                                await self.send_ack(packet, addr, qos=qos)
-                            print(message)
-                        except Exception as e:
-                            self.logger.error(f"Publish packet error: {e}")
+                        self.used_nonces.append({'nonce': nonce, 'timestamp': time.time()})
+                        self.cleanup_nonces()
 
-                    elif packet["type"] == 0x03:
-                        if packet["packet_id"] in self.pending_messages:
-                            del self.pending_messages[packet["packet_id"]]
-                            self.logger.info(f"ACK received for packet ID {packet['packet_id']}")
+                        self.logger.info(f"Received on {channel}: {message}")
 
-                    elif packet["type"] == 0x05:
-                        await self.send_heartbeat_response(addr)
+                        qos = packet["flags"] & 0x03
+                        if qos in (1, 2, 3):
+                            await self.send_ack(packet, addr, qos=qos)
+
+                    except Exception as e:
+                        self.logger.error(f"Publish packet error from {addr}: {e}")
+
+                elif packet.get("type") == 0x03:
+                    packet_id = packet.get("packet_id")
+                    if packet_id in self.pending_messages:
+                        del self.pending_messages[packet_id]
+                        self.logger.info(f"ACK received for packet ID {packet_id}")
+
+                elif packet.get("type") == 0x05:
+                    await self.send_heartbeat_response(addr)
 
                 await self.cleanup_expired_messages()
 
             except OSError as e:
                 self.logger.error(f"Socket error: {e}")
                 await self.reinitialize_socket()
+
             except Exception as e:
                 self.logger.error(f"Listen error: {e}")
-            await asyncio.sleep(0.1)
 
+            await asyncio.sleep(0.1)
+        
     def create_packet(self, packet_type, flags, channel_id, payload, packet_id=None, ttl=DEFAULT_TTL):
         try:
             if not isinstance(payload, (bytes, bytearray)):
@@ -569,4 +619,5 @@ class NoMQ:
 
     def __del__(self):
         self.close()
+
 
