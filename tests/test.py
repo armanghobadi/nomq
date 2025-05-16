@@ -7,7 +7,7 @@ import socket
 import json
 
 # Import the NoMQ class (assuming it's in the same directory)
-from nomq import NoMQ, SimpleLogger
+from NoMQ.nomq import NoMQ, SimpleLogger
 
 # WiFi credentials (replace with your own)
 WIFI_SSID = "SSID"

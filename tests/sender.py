@@ -1,20 +1,12 @@
-import network
 import uasyncio as asyncio
-from machine import Pin
-from nomq import NoMQ  # Assume NoMQ class is in nomq.py
-import time
+from nomq import NoMQ
+import network
+import uhashlib
+import ubinascii
 
 # Wi-Fi credentials
-SSID = "your_wifi_ssid"
-PASSWORD = "your_wifi_password"
-
-
-# NoMQ configuration
-CHANNEL = "test/channel"
-RECEIVER_IP = "255.255.255.255"  # Replace with receiver's IP address
-PORT = 8888
-ENCRYPTION_KEY = b'32_byte_hmac_key' * 2  # 32 bytes
-HMAC_KEY = b'32_byte_hmac_key' * 2  # 32 bytes
+SSID = "Dade-Pardazan-2GHz"
+PASSWORD = "@14002020"
 
 async def connect_wifi():
     wlan = network.WLAN(network.STA_IF)
@@ -26,48 +18,17 @@ async def connect_wifi():
             await asyncio.sleep(1)
     print("Wi-Fi connected:", wlan.ifconfig())
 
-async def sender_task():
-    # Initialize NoMQ
-    nomq = NoMQ(
-        ip='0.0.0.0',
-        port=PORT,
-        encryption_key=ENCRYPTION_KEY,
-        hmac_key=HMAC_KEY,
-        log_level='DEBUG'
-    )
-    
-    try:
-        # Publish messages periodically
-        for i in range(5):  # Send 5 test messages
-            message = f"Hello from sender, message #{i+1}"
-            print(f"Sending: {message}")
-            await nomq.publish(
-                channel=CHANNEL,
-                message=message,
-                qos=1,  # Reliable delivery
-                retain=True,  # Retain for new subscribers
-                ttl=3600,  # 1 hour TTL
-                ip=RECEIVER_IP,
-                port=PORT
-            )
-            
-            await nomq.subscribe(CHANNEL, priority=0)
-            print(f"Subscribed to {CHANNEL}, listening for messages...")
-            
-            # Wait for messages with a timeout
-            try:
-                await asyncio.wait_for(nomq.listen(), timeout=0.2)  # Timeout after 5 seconds
-            except asyncio.TimeoutError:
-                pass  # Exit the loop if no message is received
-            
-            await asyncio.sleep(1)  # Short delay between iterations
-    finally:
-        nomq.close()
-
 async def main():
     await connect_wifi()
-    await sender_task()
+    nomq = NoMQ(config_file='nomq_config.json', log_level='DEBUG')
+    auth_message = b"test_message"
+    public_key = ubinascii.unhexlify("abcdef1234567890abcdef1234567890")
+    signature = uhashlib.sha256(auth_message + public_key).digest()
+    await nomq.subscribe("test/channel", priority=5, signature=signature, message=auth_message, addr=('192.168.18.33', 8888))
+    
+        
+    await nomq.publish("test/channel", "Hello, IoT!" * 10, qos=2, retain=True, ip="192.168.18.33", port=8888, signature=signature, auth_message=auth_message)
+    await nomq.listen()
+    await nomq.listen()
 
-# Run the sender
-loop = asyncio.get_event_loop()
-loop.run_until_complete(main())
+asyncio.run(main())
