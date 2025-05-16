@@ -12,29 +12,7 @@ import os
 import select
 import json
 import gc
-
-class SimpleLogger:
-    """A simple logger for MicroPython with minimal memory footprint."""
-    LEVELS = {'DEBUG': 10, 'INFO': 20, 'WARNING': 30, 'ERROR': 40}
-    
-    def __init__(self, level='DEBUG'):
-        self.level = self.LEVELS.get(level, 20)
-    
-    def _log(self, level, msg):
-        if self.LEVELS.get(level, 20) >= self.level:
-            print(f"[{level}] {time.time()}: {msg}")
-    
-    def debug(self, msg):
-        self._log('DEBUG', msg)
-    
-    def info(self, msg):
-        self._log('INFO', msg)
-    
-    def warning(self, msg):
-        self._log('WARNING', msg)
-    
-    def error(self, msg):
-        self._log('ERROR', msg)
+from logger import SimpleLogger
 
 class NoMQ:
     """
