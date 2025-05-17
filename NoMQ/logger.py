@@ -1,25 +1,16 @@
 import time 
 
+# SimpleLogger implementation (if not provided)
 class SimpleLogger:
-    """
-    Simple logger for MicroPython to replace standard logging module.
-    """
     def __init__(self, level='INFO'):
-        self.levels = {'DEBUG': 10, 'INFO': 20, 'WARNING': 30, 'ERROR': 40}
-        self.level = self.levels.get(level, 20)
-
-    def debug(self, msg):
-        if self.level <= self.levels['DEBUG']:
-            print(f"{time.time():.3f} - DEBUG - {msg}")
-
-    def info(self, msg):
-        if self.level <= self.levels['INFO']:
-            print(f"{time.time():.3f} - INFO - {msg}")
-
-    def warning(self, msg):
-        if self.level <= self.levels['WARNING']:
-            print(f"{time.time():.3f} - WARNING - {msg}")
-
-    def error(self, msg):
-        if self.level <= self.levels['ERROR']:
-            print(f"{time.time():.3f} - ERROR - {msg}")
+        self.level = level
+        self.levels = {'DEBUG': 0, 'INFO': 1, 'WARNING': 2, 'ERROR': 3}
+    
+    def _log(self, level, msg):
+        if self.levels.get(level, 0) >= self.levels.get(self.level, 0):
+            print(f"[{level}] {msg}")
+    
+    def info(self, msg): self._log('INFO', msg)
+    def warning(self, msg): self._log('WARNING', msg)
+    def error(self, msg): self._log('ERROR', msg)
+    def debug(self, msg): self._log('DEBUG', msg)

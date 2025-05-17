@@ -13,7 +13,7 @@ import select
 import json
 import gc
 
-#logger
+# Logger
 from logger import SimpleLogger
 
 
@@ -40,7 +40,6 @@ class NoMQ:
     HEARTBEAT_INTERVAL = 30
     SESSION_TIMEOUT = 300
     MAX_RETRIES = 3
-    MAX_AUTH_DEVICES = 50
     TIMESTAMP_WINDOW = 30
     NONCE_WINDOW = 100
     MAX_BACKOFF = 60
@@ -48,7 +47,17 @@ class NoMQ:
     MAGIC_NUMBER = 0x4E4D  # 'NM'
 
     def __init__(self, config_file='nomq_config.json', log_level='INFO', timeout=5):
-        """Initialize NoMQ with configuration and logging."""
+        """
+        Initialize NoMQ with configuration and logging.
+        
+        Args:
+            config_file (str): Path to encrypted configuration file.
+            log_level (str): Logging level ('DEBUG', 'INFO', 'WARNING', 'ERROR').
+            timeout (float): Socket timeout in seconds.
+        
+        Raises:
+            RuntimeError: If config loading or socket initialization fails.
+        """
         self.logger = SimpleLogger(level=log_level)
         self.timeout = timeout
         self.device_id = self._get_device_id()
@@ -57,7 +66,7 @@ class NoMQ:
         self.channels = []
         self.retained_messages = {}
         self.pending_messages = {}
-        self.nonce_set = []  # Use list instead of deque with maxlen
+        self.nonce_set = []
         self.socket = None
         self.poller = None
         self.running = False
@@ -67,7 +76,15 @@ class NoMQ:
         self.logger.info(f"NoMQ initialized on {self.ip}:{self.port} (IPv{'6' if self.use_ipv6 else '4'})")
 
     def _load_config(self, config_file):
-        """Load and decrypt configuration from file."""
+        """
+        Load and decrypt configuration from file.
+        
+        Args:
+            config_file (str): Path to encrypted config file.
+        
+        Raises:
+            RuntimeError: If config is invalid or decryption fails.
+        """
         try:
             with open(config_file, 'r') as f:
                 encrypted_data = ubinascii.a2b_base64(f.read().strip())
@@ -98,8 +115,39 @@ class NoMQ:
             self.logger.error(f"Failed to load config: {e}")
             raise RuntimeError(f"Config load failed: {e}")
 
+    def create_config(self, config_dict, output_file):
+        """
+        Encrypt and save configuration to a file.
+        
+        Args:
+            config_dict (dict): Configuration dictionary (ip, port, use_ipv6, encryption_key, hmac_key).
+            output_file (str): Path to save encrypted config file.
+        
+        Raises:
+            OSError: If file writing fails.
+        """
+        try:
+            config_data = json.dumps(config_dict).encode('utf-8')
+            config_key = hashlib.sha256(b"nomq_config_key").digest()
+            iv = os.urandom(16)
+            cipher = aes(config_key, 2, iv)
+            pad_len = 16 - (len(config_data) % 16)
+            padded_data = config_data + bytes([pad_len] * pad_len)
+            encrypted_data = iv + cipher.encrypt(padded_data)
+            with open(output_file, 'w') as f:
+                f.write(ubinascii.b2a_base64(encrypted_data).decode('utf-8'))
+            self.logger.info(f"Config saved to {output_file}")
+        except (OSError, TypeError) as e:
+            self.logger.error(f"Failed to save config: {e}")
+            raise
+
     def _initialize_socket(self):
-        """Initialize UDP socket with proper configuration."""
+        """
+        Initialize UDP socket with proper configuration.
+        
+        Raises:
+            RuntimeError: If socket binding fails.
+        """
         try:
             if self.socket:
                 self.socket.close()
@@ -125,7 +173,12 @@ class NoMQ:
             raise RuntimeError(f"Socket bind failed: {e}")
 
     async def _reinitialize_socket(self):
-        """Reinitialize socket with exponential backoff."""
+        """
+        Reinitialize socket with exponential backoff.
+        
+        Raises:
+            RuntimeError: If max reinitialization attempts are reached.
+        """
         self.logger.warning("Reinitializing socket...")
         self.backoff_count += 1
         backoff_time = min(2 ** self.backoff_count, self.MAX_BACKOFF)
@@ -168,22 +221,42 @@ class NoMQ:
         """Clean up expired nonces to prevent memory overflow."""
         current_time = time.time()
         self.nonce_set = [n for n in self.nonce_set if n['timestamp'] + self.TIMESTAMP_WINDOW > current_time]
-        if len(self.nonce_set) > self.NONCE_WINDOW:
-            self.nonce_set = self.nonce_set[-self.NONCE_WINDOW:]
-        gc.collect()
+        while len(self.nonce_set) > self.NONCE_WINDOW:
+            self.nonce_set.pop(0)  # Simulate deque behavior
+        if len(self.nonce_set) % 10 == 0:  # Reduce gc.collect calls
+            gc.collect()
+
+    def gen_signature(self, message="auth"):
+        """
+        Generate HMAC-SHA256 signature for authentication.
         
-    def gen_signature(self, message="auth"):      
-        """Generate HMAC-SHA256 signature for authentication."""
-        hmac_key = self.hmac_key
+        Args:
+            message (str or bytes): Message to sign.
+        
+        Returns:
+            bytes: HMAC-SHA256 signature.
+        
+        Raises:
+            ValueError: If message is not bytes or string.
+        """
         if isinstance(message, str):
             message = message.encode('utf-8')
         elif not isinstance(message, (bytes, bytearray)):
             raise ValueError(f"Message must be bytes or string, got {type(message)}")
-        return uhashlib.sha256(message + hmac_key).digest()
+        return uhashlib.sha256(message + self.hmac_key).digest()
 
-    
     async def authenticate(self, signature, message, addr):
-        """Authenticate a device using HMAC-SHA256 without storing state."""
+        """
+        Authenticate a device using HMAC-SHA256 without storing state.
+        
+        Args:
+            signature (bytes): Received HMAC-SHA256 signature.
+            message (str or bytes): Message to verify.
+            addr (tuple): Device address (ip, port).
+        
+        Returns:
+            bool: True if authenticated, False otherwise.
+        """
         try:
             if isinstance(message, str):
                 message_bytes = message.encode('utf-8')
@@ -203,7 +276,20 @@ class NoMQ:
             return False
 
     async def subscribe(self, channel, priority=0, signature=None, message=None, addr=None):
-        """Subscribe to a channel with optional authentication."""
+        """
+        Subscribe to a channel with optional authentication.
+        
+        Args:
+            channel (str): Channel name to subscribe to.
+            priority (int): Subscription priority (0-15).
+            signature (bytes): HMAC-SHA256 signature for authentication.
+            message (str or bytes): Authentication message.
+            addr (tuple): Device address for authentication.
+        
+        Raises:
+            ValueError: If channel is invalid.
+            RuntimeError: If max channel limit is reached.
+        """
         try:
             if not isinstance(channel, str) or not channel:
                 raise ValueError("Channel must be a non-empty string")
@@ -235,7 +321,25 @@ class NoMQ:
             self.logger.error(f"Subscribe failed: {e}")
 
     async def publish(self, channel, message, qos=1, retain=False, ttl=DEFAULT_TTL, priority=0, ip='255.255.255.255', port=8888, signature=None, auth_message=None):
-        """Publish a message to a channel with QoS and optional authentication."""
+        """
+        Publish a message to a channel with QoS and optional authentication.
+        
+        Args:
+            channel (str): Channel to publish to.
+            message (str): Message to publish.
+            qos (int): Quality of Service (0, 1, 2).
+            retain (bool): Whether to retain the message.
+            ttl (int): Time-to-live in seconds.
+            priority (int): Message priority (0-15).
+            ip (str): Destination IP address.
+            port (int): Destination port.
+            signature (bytes): HMAC-SHA256 signature for authentication.
+            auth_message (str or bytes): Authentication message.
+        
+        Raises:
+            ValueError: If message is invalid or exceeds size limits.
+            OSError: If network errors occur.
+        """
         try:
             if not isinstance(message, str):
                 raise ValueError(f"Message must be a string, got {type(message)}")
@@ -298,7 +402,8 @@ class NoMQ:
                                 "port": port,
                                 "retries": self.MAX_RETRIES,
                                 "timestamp": time.time(),
-                                "ttl": ttl
+                                "ttl": ttl,
+                                "state": "PUBLISH_SENT" if qos == 2 else None
                             }
                         else:
                             self.logger.warning("Pending messages limit reached")
@@ -328,7 +433,20 @@ class NoMQ:
         gc.collect()
 
     def _create_packet(self, packet_type, flags, channel_id, payload, packet_id=None, ttl=DEFAULT_TTL):
-        """Create an encrypted packet with HMAC."""
+        """
+        Create an encrypted packet with HMAC.
+        
+        Args:
+            packet_type (int): Type of packet (e.g., 0x01 for publish).
+            flags (int): Packet flags (QoS, retain, priority).
+            channel_id (bytes): 16-byte channel identifier.
+            payload (bytes): Packet payload.
+            packet_id (int): Unique packet ID (optional).
+            ttl (int): Time-to-live in seconds.
+        
+        Returns:
+            bytes: Encrypted packet or None if creation fails.
+        """
         try:
             if not isinstance(payload, (bytes, bytearray)):
                 raise ValueError(f"Payload must be bytes, got {type(payload)}")
@@ -371,7 +489,15 @@ class NoMQ:
             return None
 
     def _parse_packet(self, data):
-        """Parse an incoming packet and verify its integrity."""
+        """
+        Parse an incoming packet and verify its integrity.
+        
+        Args:
+            data (bytes): Raw packet data.
+        
+        Returns:
+            dict: Parsed packet or None if invalid.
+        """
         try:
             if len(data) < 53 + 32:
                 self.logger.warning("Packet too short")
@@ -444,7 +570,14 @@ class NoMQ:
             return None
 
     async def send_ack(self, packet, addr, qos):
-        """Send an acknowledgment packet for QoS."""
+        """
+        Send an acknowledgment packet for QoS.
+        
+        Args:
+            packet (dict): Parsed packet to acknowledge.
+            addr (tuple): Destination address.
+            qos (int): Quality of Service level.
+        """
         try:
             channel_id = hashlib.sha256(packet["channel"].encode()).digest()[:16]
             ack_packet = self._create_packet(
@@ -461,7 +594,12 @@ class NoMQ:
             self.logger.error(f"ACK send error: {e}")
 
     async def send_heartbeat_response(self, addr):
-        """Send a heartbeat response to maintain connection."""
+        """
+        Send a heartbeat response to maintain connection.
+        
+        Args:
+            addr (tuple): Destination address.
+        """
         try:
             packet = self._create_packet(
                 packet_type=0x05,
@@ -475,8 +613,82 @@ class NoMQ:
         except OSError as e:
             self.logger.error(f"Heartbeat send error: {e}")
 
+    async def handle_qos2(self, packet, addr):
+        """
+        Handle QoS 2 handshake (PUBREC, PUBREL, PUBCOMP).
+        
+        Args:
+            packet (dict): Parsed packet.
+            addr (tuple): Source address.
+        """
+        try:
+            packet_id = packet["packet_id"]
+            channel_id = hashlib.sha256(packet["channel"].encode()).digest()[:16]
+            
+            if packet["type"] == 0x01 and (packet["flags"] & 0x03) == 2:
+                # Send PUBREC
+                pubrec = self._create_packet(
+                    packet_type=0x06,  # PUBREC
+                    flags=0,
+                    channel_id=channel_id,
+                    payload=struct.pack('!I', packet_id),
+                    packet_id=packet_id
+                )
+                if pubrec:
+                    self.socket.sendto(pubrec, addr)
+                    self.pending_messages[packet_id] = {
+                        "state": "PUBREC_SENT",
+                        "packet": packet,
+                        "addr": addr,
+                        "timestamp": time.time(),
+                        "ttl": packet["ttl"]
+                    }
+                    self.logger.info(f"Sent PUBREC for packet ID {packet_id}")
+
+            elif packet["type"] == 0x07:  # PUBREL
+                if packet_id in self.pending_messages and self.pending_messages[packet_id]["state"] == "PUBREC_SENT":
+                    # Send PUBCOMP
+                    pubcomp = self._create_packet(
+                        packet_type=0x08,  # PUBCOMP
+                        flags=0,
+                        channel_id=channel_id,
+                        payload=struct.pack('!I', packet_id),
+                        packet_id=packet_id
+                    )
+                    if pubcomp:
+                        self.socket.sendto(pubcomp, addr)
+                        del self.pending_messages[packet_id]
+                        self.logger.info(f"Sent PUBCOMP for packet ID {packet_id}")
+
+            elif packet["type"] == 0x06:  # PUBREC
+                if packet_id in self.pending_messages and self.pending_messages[packet_id]["state"] == "PUBLISH_SENT":
+                    # Send PUBREL
+                    pubrel = self._create_packet(
+                        packet_type=0x07,  # PUBREL
+                        flags=0,
+                        channel_id=channel_id,
+                        payload=struct.pack('!I', packet_id),
+                        packet_id=packet_id
+                    )
+                    if pubrel:
+                        self.socket.sendto(pubrel, addr)
+                        self.pending_messages[packet_id]["state"] = "PUBREL_SENT"
+                        self.logger.info(f"Sent PUBREL for packet ID {packet_id}")
+
+            elif packet["type"] == 0x08:  # PUBCOMP
+                if packet_id in self.pending_messages and self.pending_messages[packet_id]["state"] == "PUBREL_SENT":
+                    del self.pending_messages[packet_id]
+                    self.logger.info(f"QoS 2 completed for packet ID {packet_id}")
+        except OSError as e:
+            self.logger.error(f"QoS 2 handling error: {e}")
+
     async def unsubscribe(self, channel):
-        """Unsubscribe from a channel."""
+        """
+        Unsubscribe from a channel.
+        
+        Args:
+            channel (str): Channel to unsubscribe from.
+        """
         try:
             for i, ch in enumerate(self.channels):
                 if ch["name"] == channel:
@@ -518,6 +730,9 @@ class NoMQ:
         """
         Listen for incoming messages and process them.
         Returns an object with a `mssg` method to retrieve processed messages.
+        
+        Returns:
+            Listener: Object with mssg() method to access messages.
         """
         class Listener:
             def __init__(self, nomq):
@@ -526,22 +741,18 @@ class NoMQ:
 
             def mssg(self):
                 """Retrieve the next processed message from the queue."""
-                if self.message_queue:
-                    return self.message_queue.pop(0)
-                return None
+                return self.message_queue.pop(0) if self.message_queue else None
 
         listener = Listener(self)
         self.running = True
         while self.running:
             try:
-                events = self.poller.poll(50)
+                events = self.poller.poll(100)  # Increased poll timeout
                 if not events:
                     await asyncio.sleep(0.1)
                     continue
 
                 data, addr = self.socket.recvfrom(self.BUFFER_SIZE)
-
-                # Parse packet for signature and payload
                 packet = self._parse_packet(data)
                 if not packet or not isinstance(packet, dict):
                     self.logger.error(f"Packet parsing failed from {addr}")
@@ -556,9 +767,8 @@ class NoMQ:
                     self.logger.warning(f"Unsubscribed channel: {channel}")
                     continue
 
-                # Extract HMAC and message for authentication
-                signature = data[-32:]  # Last 32 bytes are HMAC
-                message = data[:-32]   # Everything except HMAC
+                signature = data[-32:]
+                message = data[:-32]
                 if not await self.authenticate(signature, message, addr):
                     self.logger.warning(f"Unauthenticated device: {addr}")
                     continue
@@ -584,19 +794,24 @@ class NoMQ:
                         listener.message_queue.append({"channel": channel, "message": message})
 
                         qos = packet["flags"] & 0x03
-                        if qos in (1, 2):
+                        if qos == 1:
                             await self.send_ack(packet, addr, qos=qos)
+                        elif qos == 2:
+                            await self.handle_qos2(packet, addr)
 
                     except (ValueError, UnicodeDecodeError) as e:
                         self.logger.error(f"Publish packet error from {addr}: {e}")
 
-                elif packet.get("type") == 0x03:
+                elif packet.get("type") == 0x03:  # ACK
                     packet_id = packet.get("packet_id")
                     if packet_id in self.pending_messages:
                         del self.pending_messages[packet_id]
                         self.logger.info(f"ACK received for packet ID {packet_id}")
 
-                elif packet.get("type") == 0x05:
+                elif packet.get("type") in (0x06, 0x07, 0x08):  # QoS 2 packets
+                    await self.handle_qos2(packet, addr)
+
+                elif packet.get("type") == 0x05:  # Heartbeat
                     await self.send_heartbeat_response(addr)
 
                 await self.cleanup_expired_messages()
@@ -604,12 +819,16 @@ class NoMQ:
             except OSError as e:
                 self.logger.error(f"Socket error: {e}")
                 await self._reinitialize_socket()
-
+            except ValueError as e:
+                self.logger.error(f"Value error: {e}")
+            except UnicodeDecodeError as e:
+                self.logger.error(f"Decode error: {e}")
             except Exception as e:
-                self.logger.error(f"Listen error: {e}")
+                self.logger.error(f"Unexpected error: {e}")
+                await asyncio.sleep(0.1)
 
             await asyncio.sleep(0.1)
-        
+
         return listener
 
     def close(self):
@@ -624,7 +843,6 @@ class NoMQ:
             self.channels.clear()
             self.retained_messages.clear()
             self.pending_messages.clear()
-            self.authenticated_devices.clear()
             self.nonce_set.clear()
             self.logger.info("NoMQ resources cleaned up")
         except OSError as e:
@@ -633,5 +851,3 @@ class NoMQ:
     def __del__(self):
         """Ensure resources are cleaned up on object deletion."""
         self.close()
-
-
