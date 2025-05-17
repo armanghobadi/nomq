@@ -13,9 +13,20 @@ import select
 import json
 import gc
 
-# Logger
-from logger import SimpleLogger
-
+# SimpleLogger implementation (if not provided)
+class SimpleLogger:
+    def __init__(self, level='INFO'):
+        self.level = level
+        self.levels = {'DEBUG': 0, 'INFO': 1, 'WARNING': 2, 'ERROR': 3}
+    
+    def _log(self, level, msg):
+        if self.levels.get(level, 0) >= self.levels.get(self.level, 0):
+            print(f"[{level}] {msg}")
+    
+    def info(self, msg): self._log('INFO', msg)
+    def warning(self, msg): self._log('WARNING', msg)
+    def error(self, msg): self._log('ERROR', msg)
+    def debug(self, msg): self._log('DEBUG', msg)
 
 class NoMQ:
     """
@@ -747,7 +758,7 @@ class NoMQ:
         self.running = True
         while self.running:
             try:
-                events = self.poller.poll(100)  # Increased poll timeout
+                events = self.poller.poll(100)
                 if not events:
                     await asyncio.sleep(0.1)
                     continue
@@ -781,7 +792,16 @@ class NoMQ:
 
                     try:
                         timestamp, nonce, msg_len = struct.unpack('!QII', payload[:20])
-                        message = payload[20:20 + msg_len].decode('utf-8')
+                        message_bytes = payload[20:20 + msg_len]
+                        # Validate payload before decoding
+                        if msg_len > len(message_bytes):
+                            self.logger.error(f"Invalid message length from {addr}")
+                            continue
+                        try:
+                            message = message_bytes.decode('utf-8')
+                        except Exception as e:
+                            self.logger.error(f"Message decode error from {addr}: {e}")
+                            continue
 
                         if any(n['nonce'] == nonce for n in self.nonce_set):
                             self.logger.warning("Replay attack detected")
@@ -799,7 +819,7 @@ class NoMQ:
                         elif qos == 2:
                             await self.handle_qos2(packet, addr)
 
-                    except (ValueError, UnicodeDecodeError) as e:
+                    except (ValueError, Exception) as e:
                         self.logger.error(f"Publish packet error from {addr}: {e}")
 
                 elif packet.get("type") == 0x03:  # ACK
@@ -821,8 +841,6 @@ class NoMQ:
                 await self._reinitialize_socket()
             except ValueError as e:
                 self.logger.error(f"Value error: {e}")
-            except UnicodeDecodeError as e:
-                self.logger.error(f"Decode error: {e}")
             except Exception as e:
                 self.logger.error(f"Unexpected error: {e}")
                 await asyncio.sleep(0.1)
