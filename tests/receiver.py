@@ -1,8 +1,12 @@
 import uasyncio as asyncio
+from machine import unique_id
 from NoMQ.nomq import NoMQ
 import network
 import uhashlib
 import ubinascii
+import json
+import time
+
 
 # Wi-Fi credentials
 SSID = "your_wifi_ssid"
@@ -19,17 +23,46 @@ async def connect_wifi():
             await asyncio.sleep(1)
     print("Wi-Fi connected:", wlan.ifconfig())
 
-async def main():
-    await connect_wifi()
-    nomq = NoMQ(config_file='nomq_config.json', log_level='DEBUG')
-    auth_message = b"test_message"
-    public_key = ubinascii.unhexlify("abcdef1234567890abcdef1234567890")
-    signature = uhashlib.sha256(auth_message + public_key).digest()
-    await nomq.subscribe("test/channel", priority=5, signature=signature, message=auth_message, addr=('192.168.18.33', 8888))
-    
-        
-    await nomq.publish("test/channel", "Hello, IoT!" * 10, qos=2, retain=True, ip="192.168.18.33", port=8888, signature=signature, auth_message=auth_message)
-    await nomq.listen()
-    await nomq.listen()
 
-asyncio.run(main())
+async def main():
+    try:
+        await connect_wifi()
+        nomq = NoMQ('nomq_config.json', 'INFO', 5)  # Enable debug logging
+        # Generate authentication signature
+        signature = nomq.gen_signature()
+        # Subscribe to channel with authentication
+        print("Subscribing to test_channel...")
+        await nomq.subscribe(
+            "test_channel",
+            priority=0,
+            signature=signature,
+
+        )
+        
+
+        # Listen for incoming messages
+        print("Starting to listen for messages...")
+        listener = await nomq.listen()
+        while True:
+            msg = listener.mssg()
+            if msg:
+                try:
+                    # Try to parse the message as JSON
+                    parsed_msg = json.loads(msg['message'])
+                    print(f"Received JSON: {msg['channel']} -> {parsed_msg}")
+                except json.JSONDecodeError:
+                    print(f"Received non-JSON: {msg['channel']} -> {msg['message']}")
+            await asyncio.sleep(0.1)
+    
+    except Exception as e:
+        print(f"Error in main: {e}")
+        raise
+
+try:
+    asyncio.run(main())
+except KeyboardInterrupt:
+    print("Program terminated by user")
+except Exception as e:
+    print(f"Unexpected error: {e}")
+
+
