@@ -8,8 +8,8 @@ import json
 import time
 
 # Wi-Fi credentials
-SSID = "Dade-Pardazan-2GHz"
-PASSWORD = "@14002020"
+SSID = "your_wifi_ssid"
+PASSWORD = "your_wifi_password"
 
 async def connect_wifi():
     wlan = network.WLAN(network.STA_IF)
